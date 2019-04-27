@@ -25,26 +25,24 @@ const imagesAndLables = [
   // [ '/images/19_5.jpg', 1],
 ]
 
+let xDataset, yDataset;
+let model
+
+const parseImage = async ([path, label]) => {
+  const img = await loadImage(`http://127.0.0.1:8080${path}`)
+  
+  const image = tf.browser.fromPixels(img)
+  return image
+}
+
 async function prepareDataset() {
-  const parseImage = async ([path, label]) => {
-    const img = await loadImage(`http://127.0.0.1:8080${path}`)
-    
-    const image = tf.browser.fromPixels(img)
-    // console.log('p: ', path)
-    // console.log('img: ', image)
-    // await image.print()
+  const imgs = await Promise.all(imagesAndLables.map(parseImage));
+  const labels = imagesAndLables.map(([path, label]) => tf.scalar(label));
 
-    return image
-  }
-
-  const imgs = imagesAndLables.map(parseImage);
-  // const imgs = await Promise.all(imagesAndLables.map(parseImage));
-  const labels = imagesAndLables.map(([path, label]) => label);
-
-  const xDataset = tf.data.array(imgs);
-  const yDataset = tf.data.array(labels);
-  // yDataset.print()
+  xDataset = tf.data.array(imgs);
+  yDataset = tf.data.array(labels);
   const xyDataset = tf.data.zip({xs: xDataset, ys: yDataset})
+    .batch(8);
 
   return xyDataset
 }
@@ -65,16 +63,22 @@ function loadImage(src) {
 }
 
 document.querySelector('#btn-load').addEventListener('click', async (event) => {
-  // console.log('event: ', event)
-  const xyDataset = prepareDataset()
+  const xyDataset = await prepareDataset()
 
-  const model = getModel()
-  // model.compile({optimizer: 'sgd', loss: 'meanSquaredError'});
-  const history = await model.fitDataset(xyDataset, {
-    epochs: 4,
-    callbacks: {onEpochEnd: (epoch, logs) => console.log(logs.loss)}
-  });
+  model = getModel()
+  model.compile({optimizer: 'sgd', loss: 'meanSquaredError'});
+  tfvis.show.modelSummary({name: 'Model Architecture'}, model);
+  
+  await train(model, xyDataset);
 });
+
+document.querySelector('#pred-load').addEventListener('click', async (event) => {
+  const img =  await loadImage('http://127.0.0.1:8080/images/02_5.jpg')
+  let ten = tf.browser.fromPixels(img)
+  ten = ten.reshape([1, 500, 375, 3])
+
+  console.log('Result: ', await model.predictOnBatch(ten).data())
+})
 
 function getModel() {
   const model = tf.sequential();
@@ -82,10 +86,7 @@ function getModel() {
   const IMAGE_WIDTH = 500;
   const IMAGE_HEIGHT = 375;
   const IMAGE_CHANNELS = 3;
-  
-  // In the first layer of out convolutional neural network we have 
-  // to specify the input shape. Then we specify some paramaters for 
-  // the convolution operation that takes place in this layer.
+
   model.add(tf.layers.conv2d({
     inputShape: [IMAGE_WIDTH, IMAGE_HEIGHT, IMAGE_CHANNELS],
     kernelSize: 5,
@@ -95,12 +96,8 @@ function getModel() {
     kernelInitializer: 'varianceScaling'
   }));
 
-  // The MaxPooling layer acts as a sort of downsampling using max values
-  // in a region instead of averaging.  
-  model.add(tf.layers.maxPooling2d({poolSize: [1, 1], strides: [1, 1]}));
-  
-  // Repeat another conv2d + maxPooling stack. 
-  // Note that we have more filters in the convolution.
+  model.add(tf.layers.maxPooling2d({poolSize: [2, 2], strides: [2, 2]}));
+
   model.add(tf.layers.conv2d({
     kernelSize: 5,
     filters: 16,
@@ -109,14 +106,9 @@ function getModel() {
     kernelInitializer: 'varianceScaling'
   }));
   model.add(tf.layers.maxPooling2d({poolSize: [1, 1], strides: [1, 1]}));
-  
-  // Now we flatten the output from the 2D filters into a 1D vector to prepare
-  // it for input into our last layer. This is common practice when feeding
-  // higher dimensional data to a final classification output layer.
+
   model.add(tf.layers.flatten());
 
-  // Our last layer is a dense layer which has 10 output units, one for each
-  // output class (i.e. 0, 1, 2, 3, 4, 5, 6, 7, 8, 9).
   const NUM_OUTPUT_CLASSES = 2;
   model.add(tf.layers.dense({
     units: NUM_OUTPUT_CLASSES,
@@ -124,9 +116,6 @@ function getModel() {
     activation: 'softmax'
   }));
 
-  
-  // Choose an optimizer, loss function and accuracy metric,
-  // then compile and return the model
   const optimizer = tf.train.adam();
   model.compile({
     optimizer: optimizer,
@@ -135,4 +124,21 @@ function getModel() {
   });
 
   return model;
+}
+
+async function train(model, xyDataset) {
+  const metrics = ['loss', 'val_loss', 'acc', 'val_acc'];
+  const container = {
+    name: 'Model Training', styles: { height: '1000px' }
+  };
+  const fitCallbacks = tfvis.show.fitCallbacks(container, metrics);
+  
+  const BATCH_SIZE = 1;
+
+  return model.fitDataset(xyDataset, {
+    batchSize: BATCH_SIZE,
+    epochs: 8,
+    shuffle: true,
+    callbacks: fitCallbacks
+  });
 }
